@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flatway Spain</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:2rem 1rem}
+.container{background:white;border-radius:12px;padding:2rem;width:100%;max-width:660px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+h1{font-size:22px;font-weight:700;margin-bottom:4px}
+.sub{font-size:14px;color:#666;margin-bottom:1.5rem}
+.search-wrap{position:relative;margin-bottom:6px}
+.search-input{width:100%;padding:14px 48px 14px 16px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;transition:border-color 0.15s}
+.search-input:focus{border-color:#c0392b}
+.hint{font-size:12px;color:#666;margin-bottom:1.5rem}
+.dropdown{position:absolute;top:calc(100% + 4px);left:0;right:0;background:white;border:1px solid #eee;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.1);z-index:100;overflow:hidden}
+.suggestion{display:flex;align-items:flex-start;gap:10px;padding:11px 16px;cursor:pointer;font-size:14px;color:#222;border-bottom:1px solid #f5f5f5}
+.suggestion:last-child{border-bottom:none}
+.suggestion:hover,.suggestion.active{background:#fdf5f5}
+.suggestion-main{font-weight:500}
+.suggestion-sub{font-size:12px;color:#888;margin-top:2px}
+.no-results,.loading{padding:12px 16px;font-size:14px;color:#999}
+.card{border:1px solid #eee;border-radius:10px;padding:1.25rem;margin-top:1rem}
+.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem}
+.card-title{font-size:17px;font-weight:700;line-height:1.3}
+.card-sub{font-size:13px;color:#666;margin-top:2px}
+.badge{font-size:11px;padding:4px 12px;border-radius:20px;background:#fdecea;color:#c0392b;font-weight:600;white-space:nowrap;margin-left:8px;flex-shrink:0}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:1rem}
+.metric{background:#f9f9f9;border-radius:8px;padding:10px 12px}
+.metric-label{font-size:11px;color:#888;margin-bottom:4px}
+.metric-value{font-size:18px;font-weight:700}
+.metric-unit{font-size:11px;color:#888}
+.section-label{font-size:11px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:0.05em;margin:1rem 0 6px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+tr{border-top:1px solid #f0f0f0}
+tr:first-child{border-top:none}
+td{padding:7px 0}
+td:first-child{color:#666;width:50%}
+td:last-child{font-weight:500;text-align:right}
+.cons-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+.cons-table th{text-align:left;color:#888;font-weight:500;padding:4px 6px 4px 0;border-bottom:1px solid #f0f0f0}
+.cons-table td{padding:5px 6px 5px 0;border-bottom:1px solid #f8f8f8;color:#333}
+.state{text-align:center;padding:2rem;color:#888;font-size:14px}
+.error-box{margin-top:1rem;border:1px solid #fdecea;border-radius:10px;padding:1rem 1.25rem}
+.error-title{font-size:13px;color:#c62828;margin-bottom:10px;font-weight:500}
+.nearby-list{display:flex;flex-direction:column;gap:5px}
+.nearby-item{border:1px solid #eee;border-radius:8px;padding:10px 14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px}
+.nearby-item:hover{border-color:#c0392b;background:#fdf5f5}
+.list-header{font-size:12px;color:#888;margin-top:1rem;margin-bottom:6px}
+.results-list{display:flex;flex-direction:column;gap:5px}
+.result-item{border:1px solid #eee;border-radius:8px;padding:10px 14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.result-item:hover{border-color:#c0392b;background:#fdf5f5}
+.result-addr{font-size:13px;font-weight:500}
+.result-meta{font-size:11px;color:#999;margin-top:2px}
+button.back{display:inline-flex;align-items:center;gap:6px;background:none;color:#333;border:1px solid #ddd;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;margin:.75rem 0 .5rem}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:12px;background:#f0f0f0;color:#555;margin:2px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🏠 Spain Property Search</h1>
+  <p class="sub">Start typing any address in Spain</p>
+  <div class="search-wrap">
+    <input class="search-input" id="search-input" type="text" placeholder="e.g. Calle Serrano 41 Madrid..." autocomplete="off" oninput="onInput()" onkeydown="onKeyDown(event)"/>
+    <div class="dropdown" id="dropdown" style="display:none"></div>
+  </div>
+  <p class="hint" id="hint-text">Type a street name and number for best results</p>
+  <div id="result-area"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let debounceTimer = null, lastList = null, activeSuggestions = [], activeIndex = -1;
+
+function removeAccents(s){ return s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+
+const PROVINCE_MAP = {'comunidad de madrid':'MADRID','madrid':'MADRID','community of madrid':'MADRID','seville':'SEVILLA','malaga':'MALAGA','cordoba':'CORDOBA','cadiz':'CADIZ','huelva':'HUELVA','jaen':'JAEN','granada':'GRANADA','almeria':'ALMERIA','zaragoza':'ZARAGOZA','huesca':'HUESCA','teruel':'TERUEL','leon':'LEON','burgos':'BURGOS','salamanca':'SALAMANCA','valladolid':'VALLADOLID','segovia':'SEGOVIA','avila':'AVILA','zamora':'ZAMORA','palencia':'PALENCIA','soria':'SORIA','toledo':'TOLEDO','ciudad real':'CIUDAD REAL','cuenca':'CUENCA','guadalajara':'GUADALAJARA','albacete':'ALBACETE','caceres':'CACERES','badajoz':'BADAJOZ','pontevedra':'PONTEVEDRA','lugo':'LUGO','ourense':'ORENSE','vizcaya':'VIZCAYA','guipuzcoa':'GUIPUZCOA','alava':'ALAVA','autonomous community of madrid':'MADRID','andalusia':'SEVILLA','catalonia':'BARCELONA','valencian community':'VALENCIA','aragon':'ZARAGOZA','castile and leon':'VALLADOLID','castile-la mancha':'TOLEDO','basque country':'VIZCAYA','navarre':'NAVARRA','balearic islands':'ILLES BALEARS','canary islands':'LAS PALMAS','region of murcia':'MURCIA','extremadura':'BADAJOZ','galicia':'PONTEVEDRA','asturias':'OVIEDO','cantabria':'SANTANDER','la rioja':'LOGRONO','cataluna':'BARCELONA','cataluña':'BARCELONA','comunitat valenciana':'VALENCIA','valencia':'VALENCIA','andalucia':'SEVILLA','andalucía':'SEVILLA','aragon':'ZARAGOZA','castilla y leon':'VALLADOLID','castilla-la mancha':'TOLEDO','extremadura':'BADAJOZ','galicia':'PONTEVEDRA','pais vasco':'VIZCAYA','navarra':'NAVARRA','la rioja':'LOGRONO','asturias':'OVIEDO','cantabria':'SANTANDER','murcia':'MURCIA','region de murcia':'MURCIA','islas baleares':'ILLES BALEARS','illes balears':'ILLES BALEARS','alacant / alicante':'ALICANTE','alicante':'ALICANTE','barcelona':'BARCELONA','girona':'GIRONA','lleida':'LLEIDA','tarragona':'TARRAGONA','sevilla':'SEVILLA','malaga':'MALAGA','málaga':'MALAGA','granada':'GRANADA','cordoba':'CORDOBA','córdoba':'CORDOBA','cadiz':'CADIZ','cádiz':'CADIZ','huelva':'HUELVA','almeria':'ALMERIA','almería':'ALMERIA','jaen':'JAEN','jaén':'JAEN','zaragoza':'ZARAGOZA','huesca':'HUESCA','teruel':'TERUEL','valladolid':'VALLADOLID','burgos':'BURGOS','leon':'LEON','salamanca':'SALAMANCA','segovia':'SEGOVIA','avila':'AVILA','zamora':'ZAMORA','palencia':'PALENCIA','soria':'SORIA','toledo':'TOLEDO','ciudad real':'CIUDAD REAL','cuenca':'CUENCA','guadalajara':'GUADALAJARA','albacete':'ALBACETE','caceres':'CACERES','badajoz':'BADAJOZ','pontevedra':'PONTEVEDRA','lugo':'LUGO','ourense':'ORENSE','vizcaya':'VIZCAYA','guipuzcoa':'GUIPUZCOA','alava':'ALAVA','santa cruz de tenerife':'SANTA CRUZ DE TENERIFE','las palmas':'LAS PALMAS'};
+
+const STREET_PREFIXES=[['carretera de','CR'],['carretera','CR'],['avenida de la','AV'],['avenida de los','AV'],['avenida de las','AV'],['avenida del','AV'],['avenida de','AV'],['avenida','AV'],['paseo de la','PS'],['paseo de los','PS'],['paseo de las','PS'],['paseo del','PS'],['paseo de','PS'],['paseo','PS'],['plaza de la','PL'],['plaza de los','PL'],['plaza de las','PL'],['plaza del','PL'],['plaza de','PL'],['plaza','PL'],['ronda de','RD'],['ronda','RD'],['glorieta de','GL'],['glorieta','GL'],['travesia de','TR'],['travesia','TR'],['calle de la','CL'],['calle de los','CL'],['calle de las','CL'],['calle del','CL'],['calle de','CL'],['calle','CL'],['carrer de la','CL'],['carrer de les','CL'],['carrer dels','CL'],['carrer del','CL'],["carrer d'",'CL'],['carrer de','CL'],['carrer','CL'],['avinguda de','AV'],['avinguda','AV'],['passeig de','PS'],['passeig','PS']];
+
+function parseRoad(road){
+  const norm=removeAccents(road).toLowerCase().trim();
+  for(const[prefix,code]of STREET_PREFIXES){
+    if(norm.startsWith(prefix)){
+      let name=road.slice(prefix.length).trim();
+      name=name.replace(/^(de la |de los |de las |del |de )/i,'').trim();
+      return{streetType:code,streetName:removeAccents(name).toUpperCase().trim()};
+    }
+  }
+  return{streetType:'CL',streetName:removeAccents(road).toUpperCase().trim()};
+}
+
+function normalizeProvince(raw){
+  if(!raw)return'';
+  const key=removeAccents(raw).toLowerCase().trim();
+  return PROVINCE_MAP[key]||removeAccents(raw).toUpperCase().trim();
+}
+
+function hasNumber(q){ return /\d/.test(q); }
+
+function onInput(){
+  const q = document.getElementById('search-input').value.trim();
+  clearTimeout(debounceTimer);
+  if(q.length < 3){ hideDropdown(); return; }
+  debounceTimer = setTimeout(() => fetchSuggestions(q), 300);
+}
+
+async function fetchSuggestions(q){
+  showDropdownLoading();
+  try {
+    if(hasNumber(q)){
+      // Use Photon for numbered searches — returns specific addressed properties
+      await fetchPhoton(q);
+    } else {
+      // Use Nominatim for street-only searches
+      await fetchNominatim(q);
+    }
+  } catch(e){ hideDropdown(); }
+}
+
+async function fetchPhoton(q){
+  const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&countrycode=es`);
+  const data = await res.json();
+  const features = (data.features || []).filter(f => {
+    const p = f.properties;
+    return p.street && p.housenumber && p.city;
+  });
+
+  activeSuggestions = features.map(f => {
+    const p = f.properties;
+    const coords = f.geometry.coordinates;
+    const label = [p.street, p.housenumber, p.postcode, p.city].filter(Boolean).join(', ');
+    const sub = [p.district, p.state].filter(Boolean).join(', ');
+    return {
+      label,
+      sub,
+      road: p.street,
+      house_number: p.housenumber,
+      city: p.city,
+      postcode: p.postcode || '',
+      province: p.state || '',
+      district: p.district || '',
+      lat: coords[1],
+      lon: coords[0],
+      type: 'address',
+    };
+  });
+
+  renderDropdown(activeSuggestions);
+}
+
+async function fetchNominatim(q){
+  const street_words = ['calle','avenida','paseo','plaza','carretera','ronda','glorieta','travesia','carrer','avinguda','passeig'];
+  const nominatim_q = street_words.some(w => q.toLowerCase().startsWith(w)) ? q : 'Calle ' + q;
+  const res = await fetch(`${API}/autocomplete?q=${encodeURIComponent(nominatim_q)}`);
+  const data = await res.json();
+  activeSuggestions = data.suggestions || [];
+  renderDropdown(activeSuggestions, data.type);
+}
+
+function showDropdownLoading(){
+  const dd = document.getElementById('dropdown');
+  dd.innerHTML = '<div class="loading">Searching...</div>';
+  dd.style.display = 'block';
+}
+
+function renderDropdown(suggestions, type){
+  const dd = document.getElementById('dropdown');
+  if(!suggestions.length){
+    dd.innerHTML = '<div class="no-results">No addresses found — try adding a street number</div>';
+    dd.style.display = 'block';
+    return;
+  }
+  dd.innerHTML = suggestions.map((s,i) => {
+    const isStreet = type === 'street' || !s.house_number;
+    const sub = s.sub || (isStreet ? 'Click to select, then type a number' : '');
+    return `<div class="suggestion" id="sug-${i}" onmousedown="selectSuggestion(${i})">
+      <div>
+        <div class="suggestion-main">📍 ${s.label}</div>
+        ${sub ? `<div class="suggestion-sub">${sub}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  dd.style.display = 'block';
+  activeIndex = -1;
+}
+
+function hideDropdown(){ document.getElementById('dropdown').style.display = 'none'; activeIndex = -1; }
+
+function onKeyDown(e){
+  if(e.key==='ArrowDown'){activeIndex=Math.min(activeIndex+1,activeSuggestions.length-1);highlightItem();}
+  else if(e.key==='ArrowUp'){activeIndex=Math.max(activeIndex-1,0);highlightItem();}
+  else if(e.key==='Enter'&&activeIndex>=0){selectSuggestion(activeIndex);}
+  else if(e.key==='Escape'){hideDropdown();}
+}
+
+function highlightItem(){ document.querySelectorAll('.suggestion').forEach((el,i)=>el.classList.toggle('active',i===activeIndex)); }
+
+function selectSuggestion(i){
+  const s = activeSuggestions[i];
+  hideDropdown();
+  document.getElementById('search-input').value = s.label;
+
+  if(!s.house_number || s.type === 'street'){
+    // Street only — prompt for number
+    document.getElementById('search-input').value = s.label + ' ';
+    document.getElementById('search-input').focus();
+    setHint('✅ Street selected — now type the street number (e.g. 11)');
+    return;
+  }
+
+  // Full address — search immediately
+  searchFromSuggestion(s);
+}
+
+async function searchFromSuggestion(s){
+  document.getElementById('result-area').innerHTML = '<p class="state">Searching Catastro...</p>';
+  lastList = null;
+  const {streetType, streetName} = parseRoad(s.road);
+  const CITY_MAP = {'seville':'SEVILLA','malaga':'MALAGA','cordoba':'CORDOBA','cadiz':'CADIZ','saragossa':'ZARAGOZA','saragosa':'ZARAGOZA','majorca':'PALMA','palma de majorca':'PALMA','corunna':'CORUNA','la coruna':'CORUNA','pamplona':'PAMPLONA','san sebastian':'SAN SEBASTIAN','bilbao':'BILBAO','vitoria':'VITORIA'};
+  const rawCity = removeAccents(s.city||'').toLowerCase().trim();
+  const municipality = CITY_MAP[rawCity] || removeAccents(s.city||'').toUpperCase().trim();
+  const province = normalizeProvince(s.province) || removeAccents(s.province||'').toUpperCase().trim();
+  await doSearch(streetName, s.house_number, municipality, province, streetType);
+}
+
+async function doSearch(street, number, municipality, province, streetType){
+  try{
+    const url = `${API}/search/address?street=${encodeURIComponent(street)}&number=${encodeURIComponent(number)}&municipality=${encodeURIComponent(municipality)}&province=${encodeURIComponent(province)}&street_type=${streetType}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(!res.ok){
+      if(data.detail && data.detail.includes('Nearby numbers')){
+        const nums = data.detail.split(': ')[1].split(', ');
+        showNearby(nums, street, municipality, province, streetType);
+      } else {
+        showError(data.detail || 'No property found.');
+      }
+      return;
+    }
+    if(!data.properties || data.properties.length === 0) return showError('No properties found. Try a different address.');
+    if(data.properties.length === 1) return renderProperty(data.properties[0], false);
+    lastList = data.properties;
+    renderList(data.properties);
+  } catch(e){ showError('Could not connect to API. Make sure uvicorn is running.'); }
+}
+
+function setHint(text){ document.getElementById('hint-text').textContent = text; }
+function showError(msg){ document.getElementById('result-area').innerHTML = `<p style="color:#c62828;font-size:14px;padding:1rem 0">⚠️ ${msg}</p>`; }
+
+function showNearby(nums, street, municipality, province, streetType){
+  let html = `<div class="error-box"><p class="error-title">⚠️ That exact number doesn't exist. Did you mean one of these?</p><div class="nearby-list">`;
+  nums.forEach(n => {
+    html += `<div class="nearby-item" onclick="doSearch('${street}','${n}','${municipality}','${province}','${streetType}')"><span>📍 ${streetType} ${street} nº${n}, ${municipality}</span><span style="color:#aaa;font-size:18px">›</span></div>`;
+  });
+  html += `</div></div>`;
+  document.getElementById('result-area').innerHTML = html;
+}
+
+function renderList(props){
+  let html = `<p class="list-header">${props.length} units found — click any to view</p><div class="results-list">`;
+  props.forEach((p,i) => {
+    const floor = p.floor && p.floor !== 'OD' ? 'Floor '+p.floor : '';
+    const door = p.door && p.door !== 'OS' ? 'Door '+p.door : '';
+    const floorDoor = [floor,door].filter(Boolean).join(', ');
+    const meta = [p.use, p.surface_m2?p.surface_m2+'m²':''].filter(Boolean).join(' · ');
+    const label = floorDoor || p.address || 'Unit '+(i+1);
+    html += `<div class="result-item" id="item-${i}" onclick="loadUnit('${p.cadastral_ref}',${i})"><div><div class="result-addr">${label}</div><div class="result-meta">${meta||p.cadastral_ref||''}</div></div><span style="color:#aaa;font-size:18px">›</span></div>`;
+  });
+  html += '</div>';
+  document.getElementById('result-area').innerHTML = html;
+}
+
+async function loadUnit(ref, idx){
+  document.getElementById(`item-${idx}`).innerHTML = '<div style="padding:8px;font-size:13px;color:#aaa;text-align:center">Loading...</div>';
+  try{
+    const res = await fetch(`${API}/property/${ref}`);
+    const data = await res.json();
+    if(!res.ok) return showError(data.detail||'Could not load property.');
+    renderProperty(data.properties[0], true);
+  } catch(e){ showError('Could not load property details.'); }
+}
+
+function renderProperty(p, showBack){
+  const backBtn = showBack && lastList ? `<button class="back" onclick="renderList(lastList)">← Back to ${lastList.length} units</button>` : '';
+
+  const useTagsHtml = p.use_types && p.use_types.length > 0
+    ? p.use_types.map(u => `<span class="tag">${u}</span>`).join(' ') : '';
+
+  let consHtml = '';
+  if(p.constructions && p.constructions.length > 0){
+    consHtml = `<p class="section-label">Construction breakdown</p>
+    <table class="cons-table">
+      <tr><th>Use</th><th>Floor</th><th>Door</th><th>Surface m²</th></tr>
+      ${p.constructions.map(c=>`<tr><td>${c.use||'–'}</td><td>${c.floor||'–'}</td><td>${c.door||'–'}</td><td>${c.surface_m2||'–'}</td></tr>`).join('')}
+    </table>`;
+  }
+
+  let coordsHtml = '';
+  if(p.coordinates && p.coordinates.lat){
+    coordsHtml = `<tr><td>Coordinates</td><td>${p.coordinates.lat.toFixed(6)}, ${p.coordinates.lon.toFixed(6)}</td></tr>`;
+  }
+
+  document.getElementById('result-area').innerHTML = `
+    ${backBtn}
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${p.address||'Property'}</div>
+          <div class="card-sub">${[p.municipality,p.province].filter(Boolean).join(', ')}${p.postal_code?' · '+p.postal_code:''}</div>
+        </div>
+        <span class="badge">${p.use||'Unknown'}</span>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">Surface</div><div class="metric-value">${p.surface_m2?Number(p.surface_m2).toLocaleString():'–'}<span class="metric-unit"> m²</span></div></div>
+        <div class="metric"><div class="metric-label">Year built</div><div class="metric-value">${p.year_built||'–'}</div></div>
+        <div class="metric"><div class="metric-label">Floors</div><div class="metric-value">${p.num_floors_above_ground||'–'}</div></div>
+      </div>
+      <p class="section-label">Property details</p>
+      <table>
+        <tr><td>Cadastral ref</td><td style="font-family:monospace;font-size:11px">${p.cadastral_ref||'–'}</td></tr>
+        <tr><td>Property class</td><td>${p.property_class==='UR'?'Urban':p.property_class==='RU'?'Rural':p.property_class||'–'}</td></tr>
+        <tr><td>Full address</td><td>${p.full_address||'–'}</td></tr>
+        <tr><td>Municipality</td><td>${p.municipality||'–'}</td></tr>
+        <tr><td>Province</td><td>${p.province||'–'}</td></tr>
+        <tr><td>Postal code</td><td>${p.postal_code||'–'}</td></tr>
+        ${p.floor?`<tr><td>Floor</td><td>${p.floor}</td></tr>`:''}
+        ${p.door?`<tr><td>Door</td><td>${p.door}</td></tr>`:''}
+        ${p.block?`<tr><td>Block</td><td>${p.block}</td></tr>`:''}
+        ${p.total_built_surface_m2?`<tr><td>Total built surface</td><td>${Number(p.total_built_surface_m2).toLocaleString()} m²</td></tr>`:''}
+        ${p.cadastral_value?`<tr><td>Cadastral value</td><td>${Number(p.cadastral_value).toLocaleString('es-ES')} €</td></tr>`:''}
+        ${p.coeff_participation?`<tr><td>Participation coeff.</td><td>${p.coeff_participation}%</td></tr>`:''}
+        ${p.street_code?`<tr><td>Street code</td><td>${p.street_code}</td></tr>`:''}
+        ${coordsHtml}
+      </table>
+      ${p.market_data ? `
+      <p class="section-label">Market data (SERPAVI 2024 — ${p.market_data.data_level === "municipality" ? "municipality level" : "province average"})</p>
+      <table>
+        <tr><td>Avg rent per m² (apartments)</td><td>${p.market_data.avg_rent_apt_m2_month ? p.market_data.avg_rent_apt_m2_month.toFixed(2) + ' €/m²/month' : '–'}</td></tr>
+        <tr><td>Avg rent per m² (houses)</td><td>${p.market_data.avg_rent_house_m2_month ? p.market_data.avg_rent_house_m2_month.toFixed(2) + ' €/m²/month' : '–'}</td></tr>
+        ${p.market_data.estimated_monthly_rent ? `<tr><td>Est. monthly rent</td><td>${Number(p.market_data.estimated_monthly_rent).toLocaleString()} €/month</td></tr>` : ''}
+        ${p.market_data.estimated_market_value ? `<tr><td>Est. market value</td><td>${Number(p.market_data.estimated_market_value).toLocaleString()} €</td></tr>` : ''}
+        ${p.market_data.estimated_price_m2 ? `<tr><td>Est. price per m²</td><td>${Number(p.market_data.estimated_price_m2).toLocaleString()} €/m²</td></tr>` : ''}
+      </table>` : ''}
+      ${useTagsHtml?`<p class="section-label">Use types</p><div>${useTagsHtml}</div>`:''}
+      ${consHtml}
+    </div>`;
+
+  setHint('Type a street name and number for best results');
+}
+
+document.addEventListener('click', e => { if(!e.target.closest('.search-wrap')) hideDropdown(); });
+</script>
+</body>
+</html>
