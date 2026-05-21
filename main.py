@@ -4,6 +4,7 @@ import requests
 import xmltodict
 import unicodedata
 import re
+import time
 
 app = FastAPI(title="Flatway Spain Property Search")
 
@@ -16,6 +17,19 @@ app.add_middleware(
 
 CATASTRO_BASE = "https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx"
 CATASTRO_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# Municipality name variations (Catalan/Spanish/regional differences)
+MUNICIPALITY_VARIATIONS = {
+    'alicante': ['ALICANTE', 'ALACANT'],
+    'alacant': ['ALICANTE', 'ALACANT'],
+    'valencia': ['VALENCIA', 'VALÈNCIA'],
+    'lleida': ['LLEIDA', 'LÉRIDA'],
+    'girona': ['GIRONA', 'GERONA'],
+    'la coruña': ['A CORUÑA', 'LA CORUÑA'],
+    'orense': ['OURENSE', 'ORENSE'],
+    'san sebastián': ['SAN SEBASTIÁN', 'DONOSTIA'],
+    'pamplona': ['PAMPLONA', 'IRUÑA'],
+}
 
 PROVINCE_MAP = {
     'comunidad de madrid': 'MADRID', 'madrid': 'MADRID',
@@ -47,7 +61,6 @@ PROVINCE_MAP = {
     'lugo': 'LUGO', 'ourense': 'ORENSE', 'vizcaya': 'VIZCAYA',
     'guipuzcoa': 'GUIPUZCOA', 'alava': 'ALAVA',
     'santa cruz de tenerife': 'SANTA CRUZ DE TENERIFE', 'las palmas': 'LAS PALMAS',
-    # English names from Photon
     'community of madrid': 'MADRID', 'autonomous community of madrid': 'MADRID',
     'catalonia': 'BARCELONA', 'valencian community': 'VALENCIA',
     'andalusia': 'SEVILLA', 'aragon': 'ZARAGOZA',
@@ -104,13 +117,11 @@ def get_rental_data(ine_province_code: str, ine_municipality_code: str):
     if not ine_province_code:
         return None
     prov_code = ine_province_code.zfill(2)
-    # Try municipality level first
     if ine_municipality_code:
         mun_code = prov_code + ine_municipality_code.zfill(3)
         data = _SERPAVI.get(mun_code)
         if data:
             return {**data, 'data_level': 'municipality'}
-    # Fallback to province level
     prov_data = _SERPAVI_PROV.get(prov_code)
     if prov_data:
         return {**prov_data, 'data_level': 'province'}
@@ -125,6 +136,14 @@ def normalize_province(raw):
     key = remove_accents(raw).lower().strip()
     return PROVINCE_MAP.get(key, remove_accents(raw).upper().strip())
 
+def get_municipality_variations(municipality):
+    """Return list of municipality name variations to try"""
+    normalized = remove_accents(municipality).lower().strip()
+    variations = MUNICIPALITY_VARIATIONS.get(normalized, [municipality.upper()])
+    if municipality.upper() not in variations:
+        variations.insert(0, municipality.upper())
+    return variations
+
 def parse_road(road):
     norm = remove_accents(road).lower().strip()
     for prefix, code in STREET_PREFIXES:
@@ -134,9 +153,11 @@ def parse_road(road):
             return code, remove_accents(name).upper().strip()
     return 'CL', remove_accents(road).upper().strip()
 
-def catastro_get(endpoint, params):
+def catastro_get(endpoint, params, retry_delay=0.5):
     url = f"{CATASTRO_BASE}/{endpoint}"
     try:
+        if retry_delay > 0:
+            time.sleep(retry_delay)
         r = requests.get(url, params=params, headers=CATASTRO_HEADERS, timeout=8)
         r.raise_for_status()
         return xmltodict.parse(r.content)
@@ -161,7 +182,6 @@ def get_coordinates(street_name, street_number, postal_code, municipality):
             results = r.json()
             if results:
                 return {'lat': float(results[0]['lat']), 'lon': float(results[0]['lon'])}
-        # Fallback: postal code + municipality
         q2 = f"{postal_code}, {municipality}, Spain"
         r2 = requests.get(
             'https://nominatim.openstreetmap.org/search',
@@ -251,7 +271,7 @@ def autocomplete(q: str = Query(...)):
 
 
 # ─────────────────────────────────────────────
-# SEARCH BY ADDRESS
+# IMPROVED SEARCH BY ADDRESS WITH RETRY LOGIC
 # ─────────────────────────────────────────────
 
 @app.get("/search/address")
@@ -262,61 +282,85 @@ def search_by_address(
     province: str = Query(...),
     street_type: str = Query(default="CL"),
 ):
-    # Clean number — remove bis/ter suffixes
     clean_number = re.sub(r'\s*(bis|ter|[a-zA-Z]+)$', '', number, flags=re.IGNORECASE).strip()
-
-    params = {
-        "Provincia": province.upper(),
-        "Municipio": municipality.upper(),
-        "Sigla": street_type.upper(),
-        "Calle": street.upper(),
-        "Numero": clean_number,
-        "Bloque": "", "Escalera": "", "Planta": "", "Puerta": "",
-    }
-    data = catastro_get("Consulta_DNPLOC", params)
-    if not data:
-        raise HTTPException(status_code=503, detail="Catastro API unavailable")
-    root = data.get("consulta_dnp") or data.get("Consulta_DNP", {})
-    if not root:
-        raise HTTPException(status_code=404, detail="No results found")
-
-    bico = root.get("bico", {})
-    if bico:
-        prop = format_bico(bico)
-        prop["coordinates"] = get_coordinates(
-            prop.get("street_name", street),
-            prop.get("street_number", clean_number),
-            prop.get("postal_code", ""),
-            prop.get("municipality", municipality)
-        )
-        rental = get_rental_data(prop.get("ine_province_code"), prop.get("ine_municipality_code"))
-        if rental:
-            prop["market_data"] = dict(rental)
-            surface = prop.get("total_built_surface_m2") or (int(prop.get("surface_m2", 0)) if prop.get("surface_m2") else None)
-            if surface:
-                rent_m2 = rental.get("avg_rent_apt_m2_month")
-                if rent_m2:
-                    est_monthly_rent = round(rent_m2 * surface)
-                    est_market_value = round(est_monthly_rent * 12 / 0.05)
-                    est_price_m2 = round(est_market_value / surface)
-                    prop["market_data"]["estimated_monthly_rent"] = est_monthly_rent
-                    prop["market_data"]["estimated_market_value"] = est_market_value
-                    prop["market_data"]["estimated_price_m2"] = est_price_m2
-        return {"count": 1, "properties": [prop]}
-
-    numerero = root.get("numerero", {})
-    if numerero:
-        nump = numerero.get("nump", [])
-        if not isinstance(nump, list): nump = [nump]
-        nearby = [n.get("num", {}).get("pnp") for n in nump if n.get("num", {}).get("pnp")]
-        if nearby:
-            raise HTTPException(status_code=404, detail=f"Number not found. Nearby numbers on this street: {', '.join(nearby)}")
-
-    lrcdnp = root.get("lrcdnp", {})
-    items = lrcdnp.get("rcdnp", [])
-    if not isinstance(items, list): items = [items]
-    results = [format_list_item(i) for i in items if i]
-    return {"count": len(results), "properties": results}
+    
+    # Try municipality variations
+    municipality_variations = get_municipality_variations(municipality)
+    
+    # Try different street types if not specified
+    street_types_to_try = [street_type.upper()] if street_type and street_type != "CL" else ['CL', 'AV', 'PS', 'PL', 'CR']
+    
+    last_error = None
+    attempts = []
+    
+    for mun_var in municipality_variations:
+        for st_type in street_types_to_try:
+            params = {
+                "Provincia": province.upper(),
+                "Municipio": mun_var,
+                "Sigla": st_type,
+                "Calle": street.upper(),
+                "Numero": clean_number,
+                "Bloque": "", "Escalera": "", "Planta": "", "Puerta": "",
+            }
+            
+            attempt_key = f"{mun_var}_{st_type}"
+            if attempt_key in attempts:
+                continue
+            attempts.append(attempt_key)
+            
+            data = catastro_get("Consulta_DNPLOC", params, retry_delay=0.3)
+            if not data:
+                last_error = "Catastro API unavailable"
+                continue
+                
+            root = data.get("consulta_dnp") or data.get("Consulta_DNP", {})
+            if not root:
+                continue
+            
+            bico = root.get("bico", {})
+            if bico:
+                prop = format_bico(bico)
+                prop["coordinates"] = get_coordinates(
+                    prop.get("street_name", street),
+                    prop.get("street_number", clean_number),
+                    prop.get("postal_code", ""),
+                    prop.get("municipality", municipality)
+                )
+                rental = get_rental_data(prop.get("ine_province_code"), prop.get("ine_municipality_code"))
+                if rental:
+                    prop["market_data"] = dict(rental)
+                    surface = prop.get("total_built_surface_m2") or (int(prop.get("surface_m2", 0)) if prop.get("surface_m2") else None)
+                    if surface:
+                        rent_m2 = rental.get("avg_rent_apt_m2_month")
+                        if rent_m2:
+                            est_monthly_rent = round(rent_m2 * surface)
+                            est_market_value = round(est_monthly_rent * 12 / 0.05)
+                            est_price_m2 = round(est_market_value / surface)
+                            prop["market_data"]["estimated_monthly_rent"] = est_monthly_rent
+                            prop["market_data"]["estimated_market_value"] = est_market_value
+                            prop["market_data"]["estimated_price_m2"] = est_price_m2
+                return {"count": 1, "properties": [prop]}
+            
+            lrcdnp = root.get("lrcdnp", {})
+            items = lrcdnp.get("rcdnp", [])
+            if not isinstance(items, list): items = [items]
+            if items and items[0]:
+                results = [format_list_item(i) for i in items if i]
+                return {"count": len(results), "properties": results}
+            
+            numerero = root.get("numerero", {})
+            if numerero:
+                nump = numerero.get("nump", [])
+                if not isinstance(nump, list): nump = [nump]
+                nearby = [n.get("num", {}).get("pnp") for n in nump if n.get("num", {}).get("pnp")]
+                if nearby:
+                    last_error = f"Number not found. Nearby: {', '.join(nearby[:5])}"
+    
+    # All attempts failed
+    if last_error:
+        raise HTTPException(status_code=404, detail=last_error)
+    raise HTTPException(status_code=404, detail="Property not found after trying variations")
 
 
 # ─────────────────────────────────────────────
@@ -353,10 +397,6 @@ def get_property(rc: str):
                 prop["market_data"]["estimated_price_m2"] = round(rent_m2 * surface * 12 / 0.05 / surface)
     return {"count": 1, "properties": [prop]}
 
-
-# ─────────────────────────────────────────────
-# SEARCH BY REF
-# ─────────────────────────────────────────────
 
 @app.get("/search/ref")
 def search_by_ref(rc: str = Query(...), province: str = Query(default=""), municipality: str = Query(default="")):
