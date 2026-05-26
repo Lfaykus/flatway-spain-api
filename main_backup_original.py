@@ -187,7 +187,7 @@ def autocomplete(q: str = Query(...)):
     has_number = bool(re.search(r'\d', q))
     street_words = ['calle','avenida','paseo','plaza','carretera','ronda','glorieta','travesia','carrer','avinguda','passeig']
     q_lower = q.lower()
-    if not any(q_lower.startswith(w) for w in street_words):
+    if not any(q_lower.startswith(w) for w in street_words) and not has_number:
         nominatim_q = 'Calle ' + q
     else:
         nominatim_q = q

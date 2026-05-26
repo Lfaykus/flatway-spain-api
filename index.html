@@ -69,7 +69,7 @@ button.back{display:inline-flex;align-items:center;gap:6px;background:none;color
 </div>
 
 <script>
-const API = 'http://localhost:8000';
+const API = 'https://web-production-a4c6b.up.railway.app';
 let debounceTimer = null, lastList = null, activeSuggestions = [], activeIndex = -1;
 
 function removeAccents(s){ return s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
